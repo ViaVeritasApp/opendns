@@ -2,10 +2,6 @@ name: Build & Publish Image
 
 on:
   push:
-    branches:
-      - main
-      - staging
-      - dev
     tags:
       - 'v*.*.*'
   workflow_dispatch:
