@@ -1,0 +1,49 @@
+services:
+  opendns:
+    container_name: opendns
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    # Least-privilege runtime: non-root user, no capabilities except the one
+    # needed to bind :53, no privilege escalation, read-only root filesystem.
+    user: "65532:65532"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      # Admin API is published to the HOST LOOPBACK ONLY. It can mint DNS-01
+      # challenges (i.e. issue TLS certs for the zone) — never publish 8080 to
+      # an untrusted network. Reach it over a VPN/SSH tunnel for remote use.
+      - "127.0.0.1:8080:8080"
+    environment:
+      OPENDNS_ZONE: lan.viaveritas.app.
+      OPENDNS_NS: ns.opendns.viaveritas.app.
+      OPENDNS_GLUE: ns.opendns.viaveritas.app.=<MikroTik_IPv4>
+      OPENDNS_SOA_MBOX: hostmaster.viaveritas.app.
+      OPENDNS_ADMIN_BIND: 0.0.0.0:8080
+      # Required. Generate once (openssl rand -hex 32) and pass it in via the
+      # environment or a .env file — compose fails to start if it is unset.
+      OPENDNS_ADMIN_TOKEN: ${OPENDNS_ADMIN_TOKEN:?set OPENDNS_ADMIN_TOKEN to a random 32-byte hex string}
+      # Multi-instance: point every instance at one shared Redis so an ACME
+      # challenge written via the admin API on any instance is served by all of
+      # them. Leave unset for a single instance (in-memory store). See README §1.5.
+      # OPENDNS_REDIS_ADDR: redis:6379
+      # OPENDNS_REDIS_PASSWORD: ""
+      # OPENDNS_REDIS_DB: "0"
+
+  # Uncomment for the multi-instance setup. A/AAAA answers are stateless, so
+  # only the TXT challenge store needs sharing.
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: opendns-redis
+  #   restart: always
+  #   command: ["redis-server", "--save", "", "--appendonly", "no"]
