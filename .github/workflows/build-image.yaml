@@ -1,0 +1,170 @@
+name: Build & Publish Image
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+      - dev
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  # Comma-separated list of registries to push to. Leave empty to build only.
+  # - ghcr.io:   GitHub Container Registry
+  # - docker.io: Docker Hub
+  # - gcr.io:    Google Cloud Artifact Registry
+  DEPLOY_TO: ${{ vars.DEPLOY_TO }}
+  REPO_OWNER: ${{ github.repository_owner }}
+  REPO_NAME: ${{ github.event.repository.name }}
+
+  # Docker Hub credentials
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+  # GCP credentials
+  GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_REGISTRY_REGION: ${{ vars.GCP_REGISTRY_REGION }}
+  GCP_REGISTRY_NAME: ${{ vars.GCP_REGISTRY_NAME }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Vet
+        run: go vet ./...
+
+      # RedisStore tests skip unless OPENDNS_TEST_REDIS_ADDR is set, so this stays
+      # green without a live Redis.
+      - name: Run tests
+        run: go test -race ./...
+
+  variables:
+    name: Setup variables
+    runs-on: ubuntu-latest
+    outputs:
+      OWNER_LOWER: ${{ steps.owner_lower.outputs.OWNER_LOWER }}
+      REPO_LOWER: ${{ steps.repo_lower.outputs.REPO_LOWER }}
+      IMAGE_TAG: ${{ steps.tag.outputs.IMAGE_TAG }}
+    steps:
+      - id: owner_lower
+        name: Convert repository owner to lowercase
+        run: echo "OWNER_LOWER=$(echo '${{ env.REPO_OWNER }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - id: repo_lower
+        name: Convert repository name to lowercase
+        run: echo "REPO_LOWER=$(echo '${{ env.REPO_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - id: tag
+        name: Retrieve current tag or branch
+        run: |
+          if [[ "${{ github.ref }}" == refs/heads/* ]]; then
+            echo "IMAGE_TAG=${GITHUB_REF#refs/heads/}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "IMAGE_TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build & push docker image
+    needs: [variables, test]
+    runs-on: ubuntu-latest
+    env:
+      OWNER_LOWER: ${{ needs.variables.outputs.OWNER_LOWER }}
+      REPO_LOWER: ${{ needs.variables.outputs.REPO_LOWER }}
+      IMAGE_TAG: ${{ needs.variables.outputs.IMAGE_TAG }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          docker build -f ./Dockerfile -t "${OWNER_LOWER}/${REPO_LOWER}:${IMAGE_TAG}" .
+
+      # ============================================
+      # GitHub Container Registry
+      # ============================================
+      - name: Login to GitHub Container Registry
+        if: ${{ contains(env.DEPLOY_TO, 'ghcr.io') }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push to GitHub Container Registry
+        if: ${{ contains(env.DEPLOY_TO, 'ghcr.io') }}
+        run: |
+          docker tag "${OWNER_LOWER}/${REPO_LOWER}:${IMAGE_TAG}" "ghcr.io/${OWNER_LOWER}/${REPO_LOWER}:${IMAGE_TAG}"
+          docker push "ghcr.io/${OWNER_LOWER}/${REPO_LOWER}:${IMAGE_TAG}"
+
+      # ============================================
+      # Docker Hub
+      # ============================================
+      - name: Login to Docker Hub
+        if: ${{ contains(env.DEPLOY_TO, 'docker.io') }}
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ env.DOCKER_PASSWORD }}
+
+      - name: Push to Docker Hub
+        if: ${{ contains(env.DEPLOY_TO, 'docker.io') }}
+        run: |
+          docker tag "${OWNER_LOWER}/${REPO_LOWER}:${IMAGE_TAG}" "docker.io/${OWNER_LOWER}/${REPO_LOWER}:${IMAGE_TAG}"
+          docker push "docker.io/${OWNER_LOWER}/${REPO_LOWER}:${IMAGE_TAG}"
+
+      # ============================================
+      # GCP Artifact Registry
+      # ============================================
+      - name: Login to GCP Artifact Registry
+        if: ${{ contains(env.DEPLOY_TO, 'gcr.io') }}
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ env.GCP_CREDENTIALS }}'
+
+      - name: Push to GCP Artifact Registry
+        if: ${{ contains(env.DEPLOY_TO, 'gcr.io') }}
+        run: |
+          gcloud auth configure-docker ${GCP_REGISTRY_REGION}-docker.pkg.dev --quiet
+          REMOTE="${GCP_REGISTRY_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REGISTRY_NAME}/${REPO_LOWER}:${IMAGE_TAG}"
+          docker tag "${OWNER_LOWER}/${REPO_LOWER}:${IMAGE_TAG}" "${REMOTE}"
+          docker push "${REMOTE}"
+
+  release:
+    name: Create release
+    needs: [variables, build]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ needs.variables.outputs.IMAGE_TAG }}
+          generate_release_notes: true
