@@ -27,7 +27,7 @@ services:
     environment:
       OPENDNS_ZONE: lan.viaveritas.app.
       OPENDNS_NS: ns.opendns.viaveritas.app.
-      OPENDNS_GLUE: ns.opendns.viaveritas.app.=<MikroTik_IPv4>
+      OPENDNS_GLUE: ns.opendns.viaveritas.app.=<ROUTER_IPv4>
       OPENDNS_SOA_MBOX: hostmaster.viaveritas.app.
       OPENDNS_ADMIN_BIND: 0.0.0.0:8080
       # Required. Generate once (openssl rand -hex 32) and pass it in via the
@@ -35,7 +35,8 @@ services:
       OPENDNS_ADMIN_TOKEN: ${OPENDNS_ADMIN_TOKEN:?set OPENDNS_ADMIN_TOKEN to a random 32-byte hex string}
       # Multi-instance: point every instance at one shared Redis so an ACME
       # challenge written via the admin API on any instance is served by all of
-      # them. Leave unset for a single instance (in-memory store). See README §1.5.
+      # them. Leave unset for a single instance (in-memory store). See the
+      # "Multi-instance" section in the README.
       # OPENDNS_REDIS_ADDR: redis:6379
       # OPENDNS_REDIS_PASSWORD: ""
       # OPENDNS_REDIS_DB: "0"

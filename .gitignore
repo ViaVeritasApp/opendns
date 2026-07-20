@@ -34,3 +34,6 @@ go.work
 /wgcoord.exe
 *.conf
 config.json
+
+# Build output (make build)
+/bin/
